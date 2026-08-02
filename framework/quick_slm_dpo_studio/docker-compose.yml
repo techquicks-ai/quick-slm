@@ -1,0 +1,44 @@
+# Run the mock labelling UI:
+#     cd framework/quick_slm_dpo_studio && docker compose up --build
+# then open http://localhost:8000
+#
+# The build context is the repository root, two levels up, because the image
+# needs both halves of the app: the backend and the trainer under framework/,
+# and the UI under app/.
+services:
+  dpo-studio:
+    build:
+      context: ../..
+      dockerfile: framework/quick_slm_dpo_studio/Dockerfile
+    image: quick-slm-dpo
+    ports:
+      - "8000:8000"
+    environment:
+      DPO_MODE: mock
+      DPO_DATA_PATH: /srv/data/preferences.jsonl
+      # DPO_SEED: "7"        # set for reproducible mock scenarios
+    volumes:
+      # Collected preferences land here, on the host, surviving the container.
+      - ./data:/srv/data
+      # The UI is static, so bind-mounting it lets a front-end edit show up on
+      # reload without rebuilding the image.
+      - ../../app/quick_slm_dpo_studio:/srv/app/quick_slm_dpo_studio:ro
+
+  # ---------------------------------------------------------------------------
+  # Teacher mode (Gemma 4) runs on the RTX PRO 6000 box, not from this compose
+  # file: it needs a CUDA base image with torch + the sft extra installed, and
+  # the NVIDIA container runtime. The shape is:
+  #
+  #   dpo-studio-teacher:
+  #     build:
+  #       context: ../..
+  #       dockerfile: framework/quick_slm_dpo_studio/Dockerfile.teacher
+  #     environment: { DPO_MODE: teacher, HF_TOKEN: "${HF_TOKEN}" }
+  #     volumes: [ "./data:/srv/data", "${HOME}/.cache/huggingface:/root/.cache/huggingface" ]
+  #     deploy:
+  #       resources:
+  #         reservations:
+  #           devices:
+  #             - { driver: nvidia, count: all, capabilities: [gpu] }
+  #
+  # See README.md, "Teacher mode", for the Dockerfile.teacher and the load path.

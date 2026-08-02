@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quick-slm-trainer"
+version = "1.0.0"
+description = "Pretraining, SFT, and evaluation pipeline for Quick SLM, a 103M-parameter tool-calling language model"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Tech Quicks", email = "research@techquicks.com" }]
+keywords = ["language-model", "tool-calling", "sft", "small-language-model"]
+
+# Kept deliberately narrow. torch is NOT declared: every target environment
+# (Colab, the RTX PRO 6000 workstation) ships a torch built against a specific
+# CUDA version, and letting pip resolve it would replace a working build.
+dependencies = [
+    "numpy>=1.24",
+    "transformers>=4.44",
+    "tokenizers>=0.19",
+    "safetensors>=0.4",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+# Streaming the four pretraining corpora from HuggingFace.
+data = ["datasets>=2.20", "zstandard>=0.22", "pyarrow>=15"]
+# Teacher generation for the SFT corpus, and the LLM judge. `bitsandbytes` backs
+# the 8-bit teacher load; without it `SFTConfig.teacher_load_in_8bit` must be
+# False and the teacher needs roughly twice the VRAM.
+sft = ["datasets>=2.20", "accelerate>=0.33", "bitsandbytes>=0.43"]
+# Checkpoint comparison table and the paper's figures.
+eval = ["pandas>=2.0", "matplotlib>=3.8"]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["framework"]
+# `framework/` holds the test suite alongside the two packages, so discovery has
+# to be told what is shippable. Without `include`, setuptools finds `tests` and
+# publishes a top-level `tests` package, which then collides with every other
+# project that does the same.
+include = ["quick_slm_trainer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["framework/tests"]
+# The whole suite runs without torch or a GPU present, so CI and a laptop can
+# both check the parts that silently corrupt a run when wrong: the template, the
+# loss mask, the LR schedule, the combine allocation, the SFT filters, and the
+# packing invariant that no example straddles a window boundary.
+#
+#   pip install -e ".[dev]" && pytest
+addopts = "-q"

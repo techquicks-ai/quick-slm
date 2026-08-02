@@ -1,0 +1,199 @@
+{
+ "_comment": "Frozen record of what the framework resolves its presets to. Written by scripts/freeze_config.py, checked by framework/tests/test_frozen.py. A diff here means a framework change reached backwards into a finished run.",
+ "derived": {
+  "_comment": "Not configuration, but computed from it. The planned request count is what the corpus size and the teacher bill follow from, and it moves when a cap or a share does, so it is worth pinning separately.",
+  "planned_sft_requests": 28092
+ },
+ "pretrain_config": {
+  "data": {
+   "batch_docs": 256,
+   "budgets": {
+    "finemath": 1000000000,
+    "fineweb_edu": 7750000000,
+    "starcoder": 1000000000,
+    "tool_calling": 250000000
+   },
+   "combine_mode": "strict",
+   "ctx": 4096,
+   "finemath_min_int_score": 5,
+   "fineweb_min_int_score": 4,
+   "flush_every": 50,
+   "seed": 42,
+   "shuffle_buffer": 1000,
+   "starcoder_langs": [
+    "python"
+   ],
+   "tokenizer_repo": "NousResearch/Llama-2-7b-hf",
+   "xlam_epochs": 3
+  },
+  "model": {
+   "attention_dropout": 0.0,
+   "attn_implementation": "sdpa",
+   "head_dim": 64,
+   "hidden_act": "silu",
+   "hidden_size": 576,
+   "intermediate_size": 1536,
+   "max_position_embeddings": 4096,
+   "num_attention_heads": 9,
+   "num_hidden_layers": 24,
+   "num_key_value_heads": 3,
+   "rms_norm_eps": 1e-05,
+   "rope_theta": 10000.0,
+   "tie_word_embeddings": true
+  },
+  "notes": "as executed: 103M, 10B tokens, RTX PRO 6000 Blackwell",
+  "optim": {
+   "betas": [
+    0.9,
+    0.95
+   ],
+   "eps": 1e-08,
+   "fused": true,
+   "grad_clip": 1.0,
+   "lr_min": 3e-05,
+   "lr_peak": 0.0003,
+   "warmup_steps": 1000,
+   "weight_decay": 0.1
+  },
+  "run": {
+   "decile_milestones": true,
+   "device": "cuda",
+   "dtype": "bfloat16",
+   "eval_batches": 50,
+   "eval_every_steps": 500,
+   "grad_accum": 13,
+   "keep_last_n_ckpts": 3,
+   "log_every_steps": 10,
+   "micro_batch": 20,
+   "num_workers": 4,
+   "prefetch_factor": 4,
+   "save_every_steps": 500,
+   "seed": 1337,
+   "target_tokens": 10000000000,
+   "use_fp8": false,
+   "use_grad_checkpt": false,
+   "use_torch_compile": false
+  },
+  "sft": {
+   "category_shares": {
+    "multi_stage": 0.25,
+    "refusals": 0.05,
+    "single_stage": 0.4,
+    "state_memory_conflict": 0.2,
+    "traps": 0.1
+   },
+   "conflict_max_pairs": null,
+   "ctx": 4096,
+   "dedup_jaccard": 0.85,
+   "gen_batch_size": 32,
+   "max_example_tokens": 3000,
+   "max_examples_per_seed": null,
+   "max_new_tokens": 2048,
+   "min_example_tokens": 100,
+   "minhash_perms": 128,
+   "repetition_penalty": 1.0,
+   "sft_sync_every_batches": 20,
+   "target_examples": 80000,
+   "teacher_model": "google/gemma-4-31B-it-qat-q4_0-unquantized",
+   "temperature": 0.7,
+   "top_p": 0.95,
+   "val_fraction": 0.05
+  }
+ },
+ "sft_config": {
+  "data": {
+   "batch_docs": 256,
+   "budgets": {
+    "finemath": 1000000000,
+    "fineweb_edu": 7750000000,
+    "starcoder": 1000000000,
+    "tool_calling": 250000000
+   },
+   "combine_mode": "strict",
+   "ctx": 4096,
+   "finemath_min_int_score": 5,
+   "fineweb_min_int_score": 4,
+   "flush_every": 50,
+   "seed": 42,
+   "shuffle_buffer": 1000,
+   "starcoder_langs": [
+    "python"
+   ],
+   "tokenizer_repo": "NousResearch/Llama-2-7b-hf",
+   "xlam_epochs": 3
+  },
+  "model": {
+   "attention_dropout": 0.0,
+   "attn_implementation": "sdpa",
+   "head_dim": 64,
+   "hidden_act": "silu",
+   "hidden_size": 576,
+   "intermediate_size": 1536,
+   "max_position_embeddings": 4096,
+   "num_attention_heads": 9,
+   "num_hidden_layers": 24,
+   "num_key_value_heads": 3,
+   "rms_norm_eps": 1e-05,
+   "rope_theta": 10000.0,
+   "tie_word_embeddings": true
+  },
+  "notes": "SFT over the 103M base checkpoint",
+  "optim": {
+   "betas": [
+    0.9,
+    0.95
+   ],
+   "eps": 1e-08,
+   "fused": true,
+   "grad_clip": 1.0,
+   "lr_min": 5e-06,
+   "lr_peak": 5e-05,
+   "warmup_steps": 200,
+   "weight_decay": 0.1
+  },
+  "run": {
+   "decile_milestones": false,
+   "device": "cuda",
+   "dtype": "bfloat16",
+   "eval_batches": 50,
+   "eval_every_steps": 50,
+   "grad_accum": 3,
+   "keep_last_n_ckpts": 3,
+   "log_every_steps": 10,
+   "micro_batch": 4,
+   "num_workers": 4,
+   "prefetch_factor": 4,
+   "save_every_steps": 100,
+   "seed": 1337,
+   "target_tokens": 10000000000,
+   "use_fp8": false,
+   "use_grad_checkpt": true,
+   "use_torch_compile": false
+  },
+  "sft": {
+   "category_shares": {
+    "multi_stage": 0.25,
+    "refusals": 0.05,
+    "single_stage": 0.4,
+    "state_memory_conflict": 0.2,
+    "traps": 0.1
+   },
+   "conflict_max_pairs": 3726,
+   "ctx": 4096,
+   "dedup_jaccard": 0.85,
+   "gen_batch_size": 32,
+   "max_example_tokens": 3000,
+   "max_examples_per_seed": 40,
+   "max_new_tokens": 2048,
+   "min_example_tokens": 100,
+   "minhash_perms": 128,
+   "repetition_penalty": 1.0,
+   "sft_sync_every_batches": 20,
+   "target_examples": 80000,
+   "teacher_model": "google/gemma-4-31B-it-qat-q4_0-unquantized",
+   "temperature": 0.7,
+   "top_p": 0.95,
+   "val_fraction": 0.05
+  }
+ }
+}

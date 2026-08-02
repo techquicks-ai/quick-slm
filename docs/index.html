@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quick SLM — Documentation</title>
+<meta name="description" content="Quick SLM is a small language model trained from scratch for grounded tool-calling.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+ <button class="menu-btn" id="menuToggle" aria-label="Open navigation" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+ <a class="brand" href="index.html"><span class="dot"></span><b>Quick&nbsp;SLM</b><span>documentation</span></a>
+ <div class="spacer"></div>
+ <button class="theme-btn" id="themeToggle" aria-label="Toggle colour theme">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/></svg><span id="themeLabel">Auto</span>
+ </button>
+</header>
+
+<div class="shell">
+<aside class="sidebar">
+ <p class="navgroup">Documentation</p>
+ <a class="doclink current" href="index.html"><span>Quick SLM</span></a>
+ <nav class="sections" aria-label="On this page">
+  <a href="#what">What it is</a>
+  <a href="#architecture">Architecture</a>
+  <a href="#spec">103M Spec</a>
+  <a href="#pipeline">Training</a>
+  <a href="#corpus">Corpus</a>
+  <a href="#sft">Tool calling</a>
+  <a href="#dpo">Preferences</a>
+  <a href="#results">Results</a>
+  <a href="#paper">The Paper</a>
+  <a href="#repository">Repository</a>
+ </nav>
+</aside>
+
+<main>
+<div class="pagehead">
+ <p class="kicker">Quick SLM &middot; documentation</p>
+ <h1>Testing tool-calling at the 100M scale.</h1>
+ <p class="lead">An educational post-mortem of an experimental 103M-parameter language model trained from scratch. The goal was to test if sub-billion parameter models can reliably read live context for tool calling. (Spoiler: They struggle, and this training run ended with negative results).</p>
+ <div class="facts"><span>trained from scratch</span><span>educational record</span><span>negative results</span><span>open, tested pipeline</span></div>
+</div>
+
+<section id="what">
+ <p class="eyebrow">The idea</p>
+ <h2>Structure is cheap. Grounding is not.</h2>
+ <p>The primary goal of this project was to test whether a very small model (100M parameters) could learn to emit syntactically valid JSON tool calls where the arguments depend on facts <em>read out of context</em> rather than recalled from weights. Most work on tool-using language models starts at the billion-parameter scale, and we wanted to push the capacity limits.</p>
+ <p>Quick SLM is built around that distinction. The prompt carries two separate blocks: <span class="path">&lt;state&gt;</span>, injected by the server and authoritative, and <span class="path">&lt;memory&gt;</span>, carried from earlier in the session and not. When the two disagree the state wins, and a whole category of training data exists to place them in conflict so that a model which guesses instead of reading can be caught doing it.</p>
+ <div class="grid three">
+  <div class="tile"><h4>small on purpose</h4><p>Small is the product, not a compromise. The target is the least capacity that can hold the behaviour.</p></div>
+  <div class="tile"><h4>trained from scratch</h4><p>No base model is adapted. The corpus, the tokenizer and every checkpoint come from this pipeline.</p></div>
+  <div class="tile"><h4>reproducible</h4><p>Every knob is typed configuration written into each checkpoint, and the whole test suite runs without a GPU.</p></div>
+ </div>
+</section>
+
+<section id="architecture">
+ <p class="eyebrow">Architecture</p>
+ <h2>One decoder block, repeated</h2>
+ <p>Quick SLM is a LLaMA-style decoder-only transformer: RMSNorm pre-normalisation, rotary position embeddings, SwiGLU feed-forward blocks, and grouped-query attention at 3:1. It uses an identical decoder block costing 3,540,096 parameters, repeated 24 times.</p>
+ <figure>
+<div class="diagram">
+<svg viewBox="0 0 900 430" role="img" aria-labelledby="model-t">
+      <title id="model-t">The decoder block stack and its parameter budget</title>
+      <defs>
+       <marker id="ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0 0 L8 4 L0 8 z" fill="var(--muted)"/>
+       </marker>
+      </defs>
+
+      <!-- stack column -->
+      <text x="150" y="34" class="lbl t-ink" font-size="14" text-anchor="middle">decoder stack</text>
+      <text x="150" y="52" class="t-faint" font-size="11" text-anchor="middle">token ids → logits</text>
+
+      <rect x="60" y="66" width="180" height="34" rx="7" fill="var(--panel-2)" stroke="var(--line-strong)"/>
+      <text x="150" y="88" class="t-ink" font-size="12.5" text-anchor="middle">token embedding</text>
+      <line x1="150" y1="100" x2="150" y2="118" stroke="var(--muted)" marker-end="url(#ar)"/>
+
+      <!-- repeated block -->
+      <rect x="44" y="122" width="212" height="196" rx="10" fill="none" stroke="var(--accent)" stroke-dasharray="4 3"/>
+      <text x="58" y="140" class="t-acc" font-size="12" font-weight="700">× L</text>
+      <text x="242" y="140" class="t-acc" font-size="10.5" text-anchor="end">3,540,096 params</text>
+
+      <rect x="72" y="150" width="156" height="28" rx="6" fill="var(--card)" stroke="var(--line-strong)"/>
+      <text x="150" y="169" class="t-mut" font-size="11.5" text-anchor="middle">RMSNorm</text>
+      <line x1="150" y1="178" x2="150" y2="190" stroke="var(--muted)" marker-end="url(#ar)"/>
+      <rect x="72" y="192" width="156" height="34" rx="6" fill="var(--card)" stroke="var(--line-strong)"/>
+      <text x="150" y="209" class="t-ink" font-size="11.5" text-anchor="middle">grouped-query attn</text>
+      <text x="150" y="221" class="t-faint" font-size="9.5" text-anchor="middle">9 Q · 3 KV · RoPE</text>
+      <line x1="150" y1="226" x2="150" y2="238" stroke="var(--muted)" marker-end="url(#ar)"/>
+      <rect x="72" y="240" width="156" height="28" rx="6" fill="var(--card)" stroke="var(--line-strong)"/>
+      <text x="150" y="259" class="t-mut" font-size="11.5" text-anchor="middle">RMSNorm</text>
+      <line x1="150" y1="268" x2="150" y2="280" stroke="var(--muted)" marker-end="url(#ar)"/>
+      <rect x="72" y="282" width="156" height="30" rx="6" fill="var(--card)" stroke="var(--line-strong)"/>
+      <text x="150" y="301" class="t-ink" font-size="11.5" text-anchor="middle">SwiGLU · d_ff 1,536</text>
+
+      <line x1="150" y1="318" x2="150" y2="336" stroke="var(--muted)" marker-end="url(#ar)"/>
+      <rect x="60" y="338" width="180" height="34" rx="7" fill="var(--panel-2)" stroke="var(--line-strong)"/>
+      <text x="150" y="360" class="t-ink" font-size="12.5" text-anchor="middle">LM head · tied</text>
+
+      <!-- tie -->
+      <path d="M240 83 C 286 83, 286 355, 240 355" fill="none" stroke="var(--accent)" stroke-width="1.4"/>
+      <text x="292" y="222" class="t-acc" font-size="10" transform="rotate(90 292 222)" text-anchor="middle">shared weights</text>
+
+      <!-- GQA inset -->
+      <text x="470" y="34" class="lbl t-ink" font-size="14">grouped-query attention</text>
+      <text x="470" y="52" class="t-faint" font-size="11">9 query heads share 3 KV heads, 3:1</text>
+      <g font-size="10" text-anchor="middle">
+       <rect x="470" y="66" width="30" height="22" rx="4" fill="var(--card)" stroke="var(--line-strong)"/><text x="485" y="81" class="t-mut">Q0</text>
+       <rect x="504" y="66" width="30" height="22" rx="4" fill="var(--card)" stroke="var(--line-strong)"/><text x="519" y="81" class="t-mut">Q1</text>
+       <rect x="538" y="66" width="30" height="22" rx="4" fill="var(--card)" stroke="var(--line-strong)"/><text x="553" y="81" class="t-mut">Q2</text>
+       <rect x="586" y="66" width="30" height="22" rx="4" fill="var(--card)" stroke="var(--line-strong)"/><text x="601" y="81" class="t-mut">Q3</text>
+       <rect x="620" y="66" width="30" height="22" rx="4" fill="var(--card)" stroke="var(--line-strong)"/><text x="635" y="81" class="t-mut">Q4</text>
+       <rect x="654" y="66" width="30" height="22" rx="4" fill="var(--card)" stroke="var(--line-strong)"/><text x="669" y="81" class="t-mut">Q5</text>
+       <rect x="702" y="66" width="30" height="22" rx="4" fill="var(--card)" stroke="var(--line-strong)"/><text x="717" y="81" class="t-mut">Q6</text>
+       <rect x="736" y="66" width="30" height="22" rx="4" fill="var(--card)" stroke="var(--line-strong)"/><text x="751" y="81" class="t-mut">Q7</text>
+       <rect x="770" y="66" width="30" height="22" rx="4" fill="var(--card)" stroke="var(--line-strong)"/><text x="785" y="81" class="t-mut">Q8</text>
+       <path d="M519 88 V100 H519" stroke="var(--faint)" stroke-width=".8" fill="none"/>
+       <path d="M485 88 V100 H519 V108" stroke="var(--faint)" stroke-width=".8" fill="none"/>
+       <path d="M553 88 V100 H519" stroke="var(--faint)" stroke-width=".8" fill="none"/>
+       <path d="M635 88 V100 H635" stroke="var(--faint)" stroke-width=".8" fill="none"/>
+       <path d="M601 88 V100 H635 V108" stroke="var(--faint)" stroke-width=".8" fill="none"/>
+       <path d="M669 88 V100 H635" stroke="var(--faint)" stroke-width=".8" fill="none"/>
+       <path d="M751 88 V100 H751" stroke="var(--faint)" stroke-width=".8" fill="none"/>
+       <path d="M717 88 V100 H751 V108" stroke="var(--faint)" stroke-width=".8" fill="none"/>
+       <path d="M785 88 V100 H751" stroke="var(--faint)" stroke-width=".8" fill="none"/>
+       <rect x="504" y="108" width="30" height="22" rx="4" fill="var(--accent-wash)" stroke="var(--accent)"/><text x="519" y="123" class="t-acc">KV0</text>
+       <rect x="620" y="108" width="30" height="22" rx="4" fill="var(--accent-wash)" stroke="var(--accent)"/><text x="635" y="123" class="t-acc">KV1</text>
+       <rect x="736" y="108" width="30" height="22" rx="4" fill="var(--accent-wash)" stroke="var(--accent)"/><text x="751" y="123" class="t-acc">KV2</text>
+      </g>
+      <text x="470" y="150" class="t-faint" font-size="10.5">KV cache is 3/9 of multi-head: 9,216 values / token.</text>
+
+      <!-- ledger -->
+      <line x1="470" y1="176" x2="852" y2="176" stroke="var(--line)"/>
+      <text x="470" y="200" class="lbl t-ink" font-size="13">parameter budget</text>
+      <g font-size="11.5">
+       <text x="470" y="228" class="t-mut">embedding, tied</text><text x="852" y="228" class="t-ink" text-anchor="end" font-variant-numeric="tabular-nums">18,440,064</text>
+       <text x="470" y="252" class="t-mut">per block</text><text x="852" y="252" class="t-ink" text-anchor="end" font-variant-numeric="tabular-nums">3,540,096</text>
+       <text x="470" y="276" class="t-mut">final norm</text><text x="852" y="276" class="t-ink" text-anchor="end" font-variant-numeric="tabular-nums">576</text>
+       <line x1="470" y1="290" x2="852" y2="290" stroke="var(--line)"/>
+       <text x="470" y="314" class="t-ink" font-weight="700">total</text><text x="852" y="314" class="t-acc" text-anchor="end" font-weight="700" font-size="13" font-variant-numeric="tabular-nums">103.4M</text>
+      </g>
+      <text x="470" y="352" class="t-faint" font-size="10.5">Every number is generated from the model config, not typed in.</text>
+     </svg>
+</div>
+<figcaption><strong>Figure 1.</strong> The decoder block. It uses the identical block, costing 3,540,096 parameters, repeating 24 times. Pre-normalisation places an RMSNorm on the input of each sub-layer, so the residual path from the embedding to the final norm carries no normalisation and no scaling. Grouped-query attention at 3:1 holds the KV cache to a third of multi-head, and the embedding is tied to the output projection.</figcaption>
+</figure>
+ <p>Below a billion parameters, deep and thin configurations outperform shallow and wide ones at a fixed budget, so depth is the axis these models spend on. Width has stayed at 576.</p>
+</section>
+
+<section id="spec">
+ <p class="eyebrow">103M Spec</p>
+ <h2>576 wide, 24 deep</h2>
+ <div class="tablewrap">
+  <table>
+   <thead><tr><th>Field</th><th class="num">Value</th><th>Field</th><th class="num">Value</th></tr></thead>
+   <tbody>
+    <tr><td>Hidden size</td><td class="num">576</td><td>Query heads</td><td class="num">9</td></tr>
+    <tr><td>Layers</td><td class="num">24</td><td>KV heads (GQA)</td><td class="num">3</td></tr>
+    <tr><td>FFN intermediate</td><td class="num">1,536</td><td>Head dim</td><td class="num">64</td></tr>
+    <tr><td>Context</td><td class="num">4,096</td><td>Vocabulary</td><td class="num">32,014</td></tr>
+    <tr><td>Aspect ratio</td><td class="num">24.0</td><td>Weight tying</td><td class="num">yes</td></tr>
+    <tr class="hl"><td><strong>Parameters</strong></td><td class="num"><strong>103,402,944</strong></td><td>Block cost</td><td class="num">3,540,096</td></tr>
+   </tbody>
+  </table>
+ </div>
+ <p>The configuration is not independently derived. It is the published SmolLM-135M configuration with two changes, and the parameter count decomposes exactly as the tied embedding, 24 identical blocks, and one final norm.</p>
+</section>
+
+<section id="pipeline">
+ <p class="eyebrow">Training</p>
+ <h2>From raw corpus to agent</h2>
+ <p>A run is driven by numbered notebooks. They are deliberately thin: every piece of logic whose failure would be silent, the prompt template, the loss mask, the learning-rate schedule, the corpus ratios, lives in the framework behind a test. The notebooks mount storage, install the framework, and call into it.</p>
+ <figure>
+<div class="diagram">
+<svg viewBox="0 0 900 232" role="img" aria-labelledby="pipe-t">
+      <title id="pipe-t">The six-notebook training sequence, grouped into phases</title>
+      <defs>
+       <marker id="ar2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L8 4 L0 8 z" fill="var(--accent)"/>
+       </marker>
+      </defs>
+      <!-- phase bands -->
+      <rect x="16" y="70" width="150" height="96" rx="9" fill="var(--panel)" stroke="var(--line)"/>
+      <text x="91" y="60" class="t-faint" font-size="10.5" text-anchor="middle" letter-spacing="1.5">DATA</text>
+      <rect x="182" y="70" width="252" height="96" rx="9" fill="var(--panel)" stroke="var(--line)"/>
+      <text x="308" y="60" class="t-faint" font-size="10.5" text-anchor="middle" letter-spacing="1.5">PRETRAIN</text>
+      <rect x="450" y="70" width="300" height="96" rx="9" fill="var(--panel)" stroke="var(--line)"/>
+      <text x="600" y="60" class="t-faint" font-size="10.5" text-anchor="middle" letter-spacing="1.5">SUPERVISED FINE-TUNE</text>
+      <rect x="766" y="70" width="118" height="96" rx="9" fill="var(--panel)" stroke="var(--line)"/>
+      <text x="825" y="60" class="t-faint" font-size="10.5" text-anchor="middle" letter-spacing="1.5">EVAL</text>
+
+      <!-- nodes -->
+      <g font-size="11" text-anchor="middle">
+       <rect x="32" y="94" width="118" height="48" rx="8" fill="var(--card)" stroke="var(--line-strong)"/>
+       <text x="91" y="114" class="t-acc" font-size="10">01</text><text x="91" y="130" class="t-ink">data prep</text>
+
+       <rect x="198" y="94" width="104" height="48" rx="8" fill="var(--card)" stroke="var(--line-strong)"/>
+       <text x="250" y="114" class="t-acc" font-size="10">02</text><text x="250" y="130" class="t-ink">pretrain</text>
+       <rect x="314" y="94" width="104" height="48" rx="8" fill="var(--card)" stroke="var(--line-strong)"/>
+       <text x="366" y="114" class="t-acc" font-size="10">03</text><text x="366" y="130" class="t-ink">checkpoint</text>
+
+       <rect x="466" y="94" width="128" height="48" rx="8" fill="var(--card)" stroke="var(--line-strong)"/>
+       <text x="530" y="114" class="t-acc" font-size="10">04</text><text x="530" y="130" class="t-ink">sft data</text>
+       <rect x="606" y="94" width="128" height="48" rx="8" fill="var(--card)" stroke="var(--line-strong)"/>
+       <text x="670" y="114" class="t-acc" font-size="10">05</text><text x="670" y="130" class="t-ink">sft train</text>
+
+       <rect x="782" y="94" width="86" height="48" rx="8" fill="var(--card)" stroke="var(--line-strong)"/>
+       <text x="825" y="114" class="t-acc" font-size="10">06</text><text x="825" y="130" class="t-ink">regrade</text>
+      </g>
+      <!-- 04 side helpers -->
+      <text x="530" y="186" class="t-faint" font-size="10" text-anchor="middle">04a seed audit · 04b salvage — CPU-only companions</text>
+
+      <!-- arrows -->
+      <line x1="150" y1="118" x2="196" y2="118" stroke="var(--accent)" marker-end="url(#ar2)"/>
+      <line x1="302" y1="118" x2="312" y2="118" stroke="var(--accent)" marker-end="url(#ar2)"/>
+      <line x1="418" y1="118" x2="464" y2="118" stroke="var(--accent)" marker-end="url(#ar2)"/>
+      <line x1="594" y1="118" x2="604" y2="118" stroke="var(--accent)" marker-end="url(#ar2)"/>
+      <line x1="734" y1="118" x2="780" y2="118" stroke="var(--accent)" marker-end="url(#ar2)"/>
+
+      <text x="450" y="212" class="t-faint" font-size="10.5" text-anchor="middle">Each notebook checks it is running inside its framework support window before doing any work.</text>
+     </svg>
+</div>
+<figcaption><strong>Figure 2.</strong> The run is a sequence, so the stages are numbered. <span class="path">01</span> builds the corpus; <span class="path">02</span> pretrains and <span class="path">03</span> probes the checkpoints; <span class="path">04</span>–<span class="path">05</span> build the SFT corpus and fine-tune; <span class="path">06</span> re-runs the judge. Notebooks 01 and 04 are network- and CPU-bound and run on a runtime with no GPU at all.</figcaption>
+</figure>
+ <p>Pretraining streams and filters public corpora into one interleaved binary: educational web text as the backbone, mathematics for argument correctness, and Python source, which is the closest signal there is to emitting a call with typed, nested arguments. Every stage is resumable, because the expensive ones are measured in days.</p>
+ 
+ <div class="note danger">
+  <p><b>NEGATIVE RESULT: OPTIMIZER STEP TOO WIDE&nbsp;&nbsp;</b>Gradients were accumulated to 1,064,960 tokens before each step, which over a 10-billion-token budget permitted only 9,390 steps. Under Adam, the distance a parameter can travel is bounded by the sum of the learning rate over the schedule, and that sum came to just 1.53. Accumulation does not reduce arithmetic; it converts arithmetic into a wider batch, and past the point where the gradient estimate is already accurate enough, the same compute would have bought optimizer steps instead.</p>
+ </div>
+</section>
+
+<section id="corpus">
+ <p class="eyebrow">Corpus</p>
+ <h2>Ten billion tokens, four sources</h2>
+ <div class="tablewrap">
+  <table>
+   <thead><tr><th>Source</th><th>Filter</th><th class="num">Share</th><th class="num">Tokens</th></tr></thead>
+   <tbody>
+    <tr><td>FineWeb-Edu</td><td><code>int_score &ge; 4</code></td><td class="num">77.5 %</td><td class="num">7.75 B</td></tr>
+    <tr><td>FineMath</td><td><code>int_score = 5</code></td><td class="num">10 %</td><td class="num">1.00 B</td></tr>
+    <tr><td>StarCoder (Python)</td><td>full</td><td class="num">10 %</td><td class="num">1.00 B</td></tr>
+    <tr><td>Function calling</td><td>xLAM + Glaive</td><td class="num">2.5 %</td><td class="num">0.25 B</td></tr>
+   </tbody>
+  </table>
+ </div>
+ <p>Tier-4 and above was chosen over strict tier-5 for the web text because strict filtering discarded 97&nbsp;% of every byte streamed and projected a 24-day wall-clock against roughly three days. Mathematics kept the strict filter, because that corpus is small enough to afford it and argument correctness depends on it.</p>
+
+ <div class="note danger">
+  <p><b>NEGATIVE RESULT: DATALOADER BUG&nbsp;&nbsp;</b>Although the budget was 10 billion tokens, a dataloader worker shuffling bug meant that the model actually saw only ~2.5B unique tokens exposed 4 times each. The effective batch size of unique sequences was drastically lower than planned.</p>
+ </div>
+
+ <div class="note danger">
+  <p><b>NEGATIVE RESULT: FUNCTION CALLING AT PRETRAINING&nbsp;&nbsp;</b>2.5&nbsp;% of the budget went on function-calling transcripts. Tool-call formatting then scored exactly zero at sixteen of the nineteen base checkpoints. The reason is the objective rather than the data: pretraining scores every token of a transcript equally, so the handful that make up a well-formed call carry no more weight than the boilerplate around them. Function-calling data should be moved entirely to fine-tuning.</p>
+ </div>
+</section>
+
+<section id="sft">
+ <p class="eyebrow">Tool calling</p>
+ <h2>Teaching the model to act</h2>
+ <p>Supervised fine-tuning is where tool-calling is learned. The corpus is synthetic, generated by a Gemma&nbsp;4 31B teacher, and organised into five categories that between them cover the ways a call can be right and the ways it can be wrong.</p>
+ <div class="tablewrap">
+  <table>
+   <thead><tr><th>Category</th><th class="num">Share</th><th>What it trains</th></tr></thead>
+   <tbody>
+    <tr><td><span class="path">single_stage</span></td><td class="num">40 %</td><td>One request, one grounded call</td></tr>
+    <tr><td><span class="path">multi_stage</span></td><td class="num">25 %</td><td>Chains: a call, its result, the next call</td></tr>
+    <tr><td><span class="path">state_memory_conflict</span></td><td class="num">20 %</td><td>State and memory disagree; read the state</td></tr>
+    <tr><td><span class="path">traps</span></td><td class="num">10 %</td><td>Missing tool, missing argument, bad result</td></tr>
+    <tr><td><span class="path">refusals</span></td><td class="num">5 %</td><td>Out of scope; decline cleanly</td></tr>
+   </tbody>
+  </table>
+ </div>
+ <figure>
+<div class="diagram">
+<svg viewBox="0 0 900 250" role="img" aria-labelledby="sft-t">
+      <title id="sft-t">The SFT corpus pipeline, from plan to packed windows</title>
+      <defs>
+       <marker id="ar3" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L8 4 L0 8 z" fill="var(--muted)"/>
+       </marker>
+      </defs>
+      <g text-anchor="middle">
+       <rect x="24" y="88" width="130" height="64" rx="9" fill="var(--accent-wash)" stroke="var(--accent)"/>
+       <text x="89" y="112" class="t-ink" font-size="12" font-weight="700">plan</text>
+       <text x="89" y="130" class="t-mut" font-size="10">requests</text>
+
+       <rect x="204" y="88" width="130" height="64" rx="9" fill="var(--card)" stroke="var(--line-strong)"/>
+       <text x="269" y="112" class="t-ink" font-size="12" font-weight="700">generate</text>
+       <text x="269" y="130" class="t-mut" font-size="10">teacher · GPU</text>
+
+       <rect x="384" y="88" width="130" height="64" rx="9" fill="var(--card)" stroke="var(--line-strong)"/>
+       <text x="449" y="112" class="t-ink" font-size="12" font-weight="700">validate</text>
+       <text x="449" y="130" class="t-mut" font-size="10">structural filters</text>
+
+       <rect x="564" y="88" width="130" height="64" rx="9" fill="var(--card)" stroke="var(--line-strong)"/>
+       <text x="629" y="112" class="t-ink" font-size="12" font-weight="700">dedup</text>
+       <text x="629" y="130" class="t-mut" font-size="10">MinHash · LSH</text>
+
+       <rect x="744" y="88" width="132" height="64" rx="9" fill="var(--panel-2)" stroke="var(--line-strong)"/>
+       <text x="810" y="112" class="t-ink" font-size="12" font-weight="700">pack</text>
+       <text x="810" y="130" class="t-mut" font-size="10">masked windows</text>
+      </g>
+      <line x1="154" y1="120" x2="202" y2="120" stroke="var(--muted)" marker-end="url(#ar3)"/>
+      <line x1="334" y1="120" x2="382" y2="120" stroke="var(--muted)" marker-end="url(#ar3)"/>
+      <line x1="514" y1="120" x2="562" y2="120" stroke="var(--muted)" marker-end="url(#ar3)"/>
+      <line x1="694" y1="120" x2="742" y2="120" stroke="var(--muted)" marker-end="url(#ar3)"/>
+
+      <text x="20" y="42" class="lbl t-ink" font-size="13">a capacity-aware plan</text>
+      <text x="20" y="62" class="t-mut" font-size="11.5">Two caps hold the teacher off duplicates dedup would delete at full price:</text>
+      <g font-size="11.5">
+       <rect x="256" y="186" width="150" height="40" rx="7" fill="var(--eol-wash)" stroke="var(--line)"/>
+       <text x="331" y="204" class="t-mut" font-size="10.5" text-anchor="middle">raw share</text>
+       <text x="331" y="219" class="t-ink" font-size="12" text-anchor="middle" font-variant-numeric="tabular-nums">71,452</text>
+       <text x="430" y="210" class="t-acc" font-size="14" text-anchor="middle">→</text>
+       <rect x="454" y="186" width="150" height="40" rx="7" fill="var(--ok-wash)" stroke="var(--ok)"/>
+       <text x="529" y="204" class="t-mut" font-size="10.5" text-anchor="middle">after per-seed cap</text>
+       <text x="529" y="219" class="t-ink" font-size="12" text-anchor="middle" font-variant-numeric="tabular-nums">28,092</text>
+       <text x="636" y="214" class="t-faint" font-size="10.5">61% fewer, before a token is spent</text>
+      </g>
+     </svg>
+</div>
+<figcaption><strong>Figure 3.</strong> <span class="path">plan_requests → run_generation → load_and_validate → dedup → pack_split</span>. The plan is capped where the scenario source runs dry: hand-written seed pools of tens of topics cannot yield thousands of distinct examples per cell, so the raw share of 71,452 requests is held to 28,092 — cutting teacher time by 61% before generation starts, with no loss of distinct signal.</figcaption>
+</figure>
+ <p>Only the first stage spends teacher time. Raw teacher text is stored rather than a parsed verdict, so every filter tightened later re-applies for the cost of a processor-bound pass rather than another generation run.</p>
+</section>
+
+<section id="dpo">
+ <p class="eyebrow">Preferences</p>
+ <h2>Collecting human judgement</h2>
+ <p>Beyond fine-tuning, a small labelling service gathers the pairwise preference data that direct preference optimisation needs. It serves one scenario at a time and records which of two candidate responses a labeller prefers, to an append-only log.</p>
+ <figure>
+<div class="diagram">
+<svg viewBox="0 0 900 260" role="img" aria-labelledby="dpo-t">
+      <title id="dpo-t">The DPO studio: browser, backend, generators, and the preference log</title>
+      <defs>
+       <marker id="ar4" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+        <path d="M0 0 L8 4 L0 8 z" fill="var(--muted)"/>
+       </marker>
+      </defs>
+
+      <!-- browser -->
+      <rect x="24" y="70" width="184" height="120" rx="10" fill="var(--panel)" stroke="var(--line-strong)"/>
+      <text x="116" y="56" class="lbl t-ink" font-size="13" text-anchor="middle">browser</text>
+      <rect x="44" y="92" width="144" height="76" rx="7" fill="var(--card)" stroke="var(--line)"/>
+      <text x="116" y="118" class="t-ink" font-size="12" text-anchor="middle">labelling UI</text>
+      <text x="116" y="138" class="t-faint" font-size="10" text-anchor="middle">app/quick_slm_dpo_studio</text>
+      <text x="116" y="154" class="t-faint" font-size="10" text-anchor="middle">A ▸ or ◂ B</text>
+
+      <!-- backend -->
+      <rect x="330" y="52" width="220" height="156" rx="10" fill="var(--panel)" stroke="var(--line-strong)"/>
+      <text x="440" y="40" class="lbl t-ink" font-size="13" text-anchor="middle">FastAPI backend</text>
+      <text x="440" y="206" class="t-faint" font-size="10" text-anchor="middle" dy="-6">framework/quick_slm_dpo_studio</text>
+      <g font-size="11" text-anchor="middle">
+       <rect x="348" y="70" width="184" height="24" rx="6" fill="var(--card)" stroke="var(--line)"/><text x="440" y="86" class="t-mut">GET /api/next</text>
+       <rect x="348" y="100" width="184" height="24" rx="6" fill="var(--card)" stroke="var(--line)"/><text x="440" y="116" class="t-mut">POST /api/preference</text>
+       <rect x="348" y="130" width="184" height="24" rx="6" fill="var(--card)" stroke="var(--line)"/><text x="440" y="146" class="t-mut">GET /api/stats · health</text>
+      </g>
+
+      <!-- generators -->
+      <text x="700" y="40" class="lbl t-ink" font-size="13" text-anchor="middle">candidate source</text>
+      <rect x="600" y="52" width="200" height="52" rx="9" fill="var(--card)" stroke="var(--line-strong)"/>
+      <text x="700" y="74" class="t-ink" font-size="12" text-anchor="middle">mock generator</text>
+      <text x="700" y="91" class="t-faint" font-size="10" text-anchor="middle">default · no GPU, runs anywhere</text>
+      <rect x="600" y="114" width="200" height="52" rx="9" fill="var(--accent-wash)" stroke="var(--accent)"/>
+      <text x="700" y="136" class="t-ink" font-size="12" text-anchor="middle">Gemma teacher</text>
+      <text x="700" y="153" class="t-faint" font-size="10" text-anchor="middle">teacher mode · on the GPU box</text>
+
+      <!-- preference log -->
+      <rect x="600" y="186" width="200" height="46" rx="9" fill="var(--panel-2)" stroke="var(--line-strong)"/>
+      <text x="700" y="208" class="t-ink" font-size="12" text-anchor="middle">preferences.jsonl</text>
+      <text x="700" y="224" class="t-faint" font-size="10" text-anchor="middle">the audit trail · never committed</text>
+
+      <!-- arrows -->
+      <line x1="208" y1="120" x2="326" y2="120" stroke="var(--muted)" marker-end="url(#ar4)"/>
+      <line x1="326" y1="140" x2="208" y2="140" stroke="var(--muted)" marker-end="url(#ar4)"/>
+      <line x1="550" y1="90" x2="598" y2="80" stroke="var(--muted)" marker-end="url(#ar4)"/>
+      <line x1="550" y1="130" x2="598" y2="138" stroke="var(--muted)" marker-end="url(#ar4)"/>
+      <line x1="530" y1="165" x2="598" y2="200" stroke="var(--muted)" marker-end="url(#ar4)"/>
+     </svg>
+</div>
+<figcaption><strong>Figure 4.</strong> The backend serves scenarios and records verdicts to an append-only log. Candidates come from a mock generator by default — no GPU, runs on a laptop, which is what the UI is built against — or from the Gemma teacher in <code>teacher</code> mode on the GPU box. Splitting the UI out means a blank page is diagnosable from <code>/api/health</code>, which reports where the backend looked for it.</figcaption>
+</figure>
+</section>
+
+<section id="results">
+ <p class="eyebrow">Results</p>
+ <h2>Capability as it emerged</h2>
+ <p>A fixed battery of twenty probes was run against every saved checkpoint and scored from 0 to 5 by a single judge, so a score at one checkpoint is comparable to a score at another.</p>
+ <div class="tablewrap">
+  <table>
+   <thead><tr><th class="num">Step</th><th class="num">Fluency</th><th class="num">Knowledge</th><th class="num">Math</th><th class="num">Code</th><th class="num">Tool</th><th class="num">Overall</th></tr></thead>
+   <tbody>
+    <tr><td class="num">500</td><td class="num">0.00</td><td class="num">0.00</td><td class="num">0.80</td><td class="num">0.00</td><td class="num">0.00</td><td class="num">0.20</td></tr>
+    <tr><td class="num">2,500</td><td class="num">1.50</td><td class="num">1.67</td><td class="num">0.20</td><td class="num">0.00</td><td class="num">1.50</td><td class="num">1.00</td></tr>
+    <tr><td class="num">4,500</td><td class="num">2.00</td><td class="num">2.00</td><td class="num">0.80</td><td class="num">1.00</td><td class="num">0.50</td><td class="num">1.40</td></tr>
+    <tr><td class="num">7,000</td><td class="num">1.25</td><td class="num">2.00</td><td class="num">1.20</td><td class="num">1.33</td><td class="num">0.00</td><td class="num">1.35</td></tr>
+    <tr class="hl"><td class="num">9,390</td><td class="num">1.50</td><td class="num">2.00</td><td class="num">1.20</td><td class="num">1.33</td><td class="num">0.00</td><td class="num">1.40</td></tr>
+   </tbody>
+  </table>
+ </div>
+ <p>The overall score rises from 0.20 to a band around 1.3 to 1.5 across the second half of training. Fluency and factual recall emerge first and carry most of the total. The trajectory is the one a base model of this size should produce: locally fluent, frequently wrong, and improving slowly after the first few thousand steps.</p>
+</section>
+
+<section id="paper">
+ <p class="eyebrow">The Paper</p>
+ <h2>Structure Is Cheap, Grounding Is Not</h2>
+ 
+ <div class="note danger">
+  <p><b>THE PRIMARY NEGATIVE RESULT&nbsp;&nbsp;</b>Quick SLM 103M successfully acquired tool-call structure but comprehensively failed to ground its arguments in the injected state. When presented with counterfactual pairs (where only the state dictates the right argument), the model grounded both branches in only 4 of 44 cases (0/44 for the SmolLM2-135M control). Detailed analysis reveals the model was pattern-matching rather than genuinely reading state, showing that <strong>at the ~100M parameter scale, syntax and formatting are easily learned, but reliable contextual grounding is not</strong>.</p>
+ </div>
+
+ <p>The model was fine-tuned on 14.7M tokens of synthetic tool calling data. The evaluation separated grounded argument selection from surface imitation using counterfactual pairs.</p>
+ 
+ <h3>Tool Calling &amp; Grounding</h3>
+ <p>The fine-tuned checkpoint emits well-formed calls for 99.9&nbsp;% of inputs (vs. 2.4&nbsp;% for the base model) and selects the correct tool 77.8&nbsp;% of the time. However, as noted above, it failed at state grounding. Detailed error analysis shows these grounding failures divide between tool selection errors and arithmetic failures on read values, suggesting this failure stems from the corpus design or sub-135M scale.</p>
+
+ <h3>Three Measurement Faults</h3>
+ <p>The evaluation identified three measurement faults that corrupted initial results, highlighting the fragility of metrics at this scale:</p>
+ <ul>
+  <li><strong>Optimizer schedule:</strong> The optimizer step was too wide (accumulating over 1M tokens), reducing the parameter travel distance under Adam.</li>
+  <li><strong>Data filter:</strong> Data filtering metrics obscured actual capacity limits.</li>
+  <li><strong>Decoder:</strong> Calculation of hardware utilization was flawed (the 6N approximation and sparsity math produced an initial 148 TFLOPS vs the corrected 70.7 TFLOPS, halving the actual MFU).</li>
+ </ul>
+ 
+ <h3>Judge Self-Preference Bias</h3>
+ <p>The evaluation exposed a 0.74-point self-preference bias caused by using the same Gemma 4 31B model for both corpus generation and evaluation. Rescoring with an independent judge isolated this bias.</p>
+</section>
+
+
+
+<section id="repository">
+ <p class="eyebrow">Repository</p>
+ <h2>One framework</h2>
+ <p>The repository splits along one line. The framework is the code and knows nothing about any particular model; a training directory holds everything specific to a run.</p>
+ <figure>
+<div class="diagram">
+<svg viewBox="0 0 900 468" role="img" aria-labelledby="repo-t">
+      <title id="repo-t">Repository layout: framework, app, and per-version training directories</title>
+      <!-- framework -->
+      <rect x="20" y="54" width="360" height="386" rx="12" fill="var(--panel)" stroke="var(--line-strong)"/>
+      <text x="40" y="42" class="lbl t-acc" font-size="15">framework/</text>
+
+      <g>
+       <rect x="40" y="72" width="320" height="86" rx="9" fill="var(--card)" stroke="var(--line-strong)"/>
+       <text x="58" y="98" class="t-ink" font-size="14" font-weight="700">quick_slm_trainer</text>
+       <text x="58" y="120" class="t-mut" font-size="11.5">pretraining · sft · dpo · model</text>
+       <text x="58" y="138" class="t-mut" font-size="11.5">trainer · config · tokenizer · support</text>
+      </g>
+      <g>
+       <rect x="40" y="170" width="320" height="70" rx="9" fill="var(--card)" stroke="var(--line-strong)"/>
+       <text x="58" y="196" class="t-ink" font-size="14" font-weight="700">quick_slm_dpo_studio</text>
+       <text x="58" y="218" class="t-mut" font-size="11.5">FastAPI preference-labelling backend</text>
+      </g>
+      <g>
+       <rect x="40" y="252" width="320" height="70" rx="9" fill="var(--card)" stroke="var(--line-strong)"/>
+       <text x="58" y="278" class="t-ink" font-size="14" font-weight="700">tests</text>
+       <text x="58" y="300" class="t-mut" font-size="11.5">554 passing · no GPU, no torch needed</text>
+      </g>
+      <g>
+       <rect x="40" y="334" width="320" height="88" rx="9" fill="var(--ground-2)" stroke="var(--line)"/>
+       <text x="58" y="360" class="t-mut" font-size="12">pyproject · __version__ = 1.0.0</text>
+       <text x="58" y="382" class="t-faint" font-size="11">semver, with one rule: a major bump</text>
+       <text x="58" y="399" class="t-faint" font-size="11">means a training version lost support</text>
+      </g>
+
+      <!-- app -->
+      <rect x="404" y="54" width="212" height="150" rx="12" fill="var(--panel)" stroke="var(--line-strong)"/>
+      <text x="424" y="42" class="lbl t-acc" font-size="15">app/</text>
+      <text x="424" y="196" class="t-faint" font-size="11.5">frontends, deployed apart</text>
+      <rect x="424" y="72" width="172" height="86" rx="9" fill="var(--card)" stroke="var(--line-strong)"/>
+      <text x="442" y="98" class="t-ink" font-size="13.5" font-weight="700">quick_slm_dpo_studio</text>
+      <text x="442" y="120" class="t-mut" font-size="11.5">the labelling UI</text>
+      <text x="442" y="138" class="t-mut" font-size="11.5">static HTML + JS</text>
+
+      <!-- link between backend and frontend -->
+      <path d="M404 205 C 470 205, 470 128, 424 118" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="4 3"/>
+      <text x="486" y="230" class="t-acc" font-size="10.5">DPO_UI_DIR</text>
+
+      <!-- training -->
+      <rect x="640" y="54" width="240" height="386" rx="12" fill="var(--panel)" stroke="var(--line-strong)"/>
+      <text x="660" y="42" class="lbl t-acc" font-size="15">training/</text>
+      <text x="660" y="440" class="t-faint" font-size="11.5" dy="-14">one directory per run</text>
+
+      <rect x="660" y="72" width="200" height="214" rx="9" fill="var(--card)" stroke="var(--ok)" stroke-width="1.5"/>
+      <text x="678" y="98" class="t-ink" font-size="14" font-weight="700"></text>
+      <rect x="812" y="82" width="34" height="17" rx="8.5" fill="var(--ok-wash)"/>
+      <text x="829" y="94.5" class="t-ink" font-size="9" text-anchor="middle" fill="var(--ok)">live</text>
+      <text x="678" y="124" class="t-mut" font-size="11.5">notebooks/ · 01–12</text>
+      <text x="678" y="146" class="t-mut" font-size="11.5">paper/ · figures</text>
+      <text x="678" y="168" class="t-mut" font-size="11.5">framework.json</text>
+      <text x="678" y="190" class="t-mut" font-size="11.5">frozen_config.json</text>
+      <text x="678" y="212" class="t-mut" font-size="11.5">SFT_README · AUDIT</text>
+      <text x="678" y="234" class="t-faint" font-size="11">Quick SLM 103M</text>
+      <text x="678" y="256" class="t-faint" font-size="11">requires framework</text>
+      <text x="678" y="272" class="t-faint" font-size="11" font-family="var(--mono)">&#62;=1.0,&#60;2.0</text>
+
+      </svg>
+</div>
+<figcaption><strong>Figure 5.</strong> The framework is one codebase, shared. A training directory is a self-contained directory. The DPO studio is split across <span class="path">framework/</span> (backend) and <span class="path">app/</span> (frontend); the backend finds the UI through <code>DPO_UI_DIR</code>.</figcaption>
+</figure>
+</section>
+
+<footer>
+ Quick SLM &middot; Tech Quicks AI Lab. Diagrams are inline SVG and follow the page theme.
+</footer>
+</main>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

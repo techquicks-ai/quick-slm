@@ -1,0 +1,146 @@
+# Quick SLM Consolidated Notes
+
+This file aggregates all original documentation from the training, supervised fine-tuning, and audits to ensure no important findings are lost.
+
+---
+
+# Part 1: Training (Quick SLM 103M)
+
+Pretraining and SFT pipeline for **Quick SLM — a 103 M-parameter LLaMA-style decoder-only language model** trained from scratch for tool calling and structured output.
+
+## Layout
+The logic lives in the `quick-slm-trainer` package under `framework/quick_slm_trainer`, outside this directory and shared by every training version. The notebooks are runners: they mount Drive, install the package, and call into it. Nothing that can silently corrupt a run is defined in a notebook cell.
+
+One shared core, one subpackage per stage. `pretraining/` owns the corpus and the window it reads; `sft/` owns the teacher, the filters, and the masked window. Everything both stages use stays at the root.
+
+## Architecture (Quick SLM, 103 M)
+| Field | Value |
+|---|---:|
+| Hidden size | 576 |
+| FFN intermediate (SwiGLU) | 1536 |
+| Layers | 24 |
+| Attention heads (Q) | 9 |
+| KV heads (GQA) | 3 |
+| Head dim | 64 |
+| Context length | 4096 |
+| Vocab | 32 014 (LLaMA-2 32 000 + 14 reserved) |
+| Norm | RMSNorm |
+| Position | RoPE (theta = 10 000) |
+| Weight tying | True |
+| **Total params** | **~103 M** |
+
+Deep-and-thin per the MobileLLM recommendation for sub-1 B models. GQA at 3:1 keeps KV-cache memory in check for the 4096-token context.
+
+## Data recipe (10 B tokens total)
+| Source | Filter | Share | Tokens |
+|---|---|---:|---:|
+| FineWeb-Edu (`sample-100BT`) | `int_score >= 4` | 77.5% | 7.75 B |
+| FineMath (`finemath-4plus`) | `int_score == 5` | 10% | 1.00 B |
+| Tool-calling (xLAM + Glaive) | full | 2.5% | 0.25 B |
+| StarCoder (Python) | full | 10% | 1.00 B |
+
+**Why these choices:**
+- **`int_score >= 4` not `int_score == 5`** for FineWeb-Edu — strict tier-5 is only ~3% of the corpus, projecting a 24-day wall-clock. Tier-4+ gives ~3-day wall-clock with negligible quality cost.
+- **Strict tier-5 for FineMath** — small corpus size finishes fast, and math quality matters for tool-arg correctness.
+- **Tool-calling capped at 250 M** — xLAM-60k repeats give about 90M tokens, Glaive fills the rest with prose. Mixing styles teaches structural generalisation.
+- **StarCoder Python only** — bracket discipline + procedural reasoning surface.
+
+Each source is processed independently into its own `.bin` then interleaved at CTX-window granularity into `combined.bin`.
+
+## Tokenizer & reserved special tokens
+The LLaMA-2 tokenizer is used, and 14 domain special tokens are added (`<tool>`, `</tool>`, `<response>`, `</response>`, `<call>`, `</call>`, `<state>`, `</state>`, `<memory>`, `</memory>`, `<think>`, `</think>`, `<|im_start|>`, `<|im_end|>`). The reserved-only tokens never appear in pretraining data and specialise quickly at SFT.
+
+## Training plan
+- BF16 mixed precision, gradient checkpointing off, attention sdpa
+- `micro_batch = 20`, `grad_accum = 13` → effective batch 260 sequences × 4096 tokens ≈ 1.06 M tokens / step
+- 9 390 steps to reach 10 B tokens
+- AdamW (β₁ 0.9, β₂ 0.95, weight-decay 0.1), grad-clip 1.0, fused
+- Cosine LR schedule: peak 3 × 10⁻⁴, warmup 1 000 steps, min 3 × 10⁻⁵
+- Checkpoints every 500 steps, rolling-3 + decile milestones
+
+---
+
+# Part 2: Supervised Fine-Tuning (SFT) Plan
+
+SFT adds multi-turn ChatML structure, `<state>` vs `<memory>` distinction, CoT reasoning via `<think>`, multi-step tool chains, and robustness.
+
+## The canonical SFT template
+```
+<|im_start|>system
+You are a helpful assistant with access to these tools:
+<tool>[{ JSON schema array }]</tool>
+<|im_end|>
+<state>{ live world snapshot }</state>
+<memory>{ session memory }</memory>
+<|im_start|>user
+{ user's natural-language request }
+<|im_end|>
+<|im_start|>assistant
+<think>
+{ private reasoning }
+</think>
+<response>[{ JSON tool-call array }]</response>
+<|im_end|>
+```
+
+## Data composition (five categories)
+1. **Single-stage tool calls** (40%): Read request, pick one tool, emit valid JSON.
+2. **Multi-stage tool chains** (25%): Chain calls where step N depends on result of step N-1.
+3. **State-memory conflict + extended CoT** (20%): Distinguish ground-truth state from possibly-stale memory. Generated and accepted as counterfactual pairs.
+4. **Traps / edge cases** (10%): Missing args, no-such-tool, empty results.
+5. **Refusals** (5%): Decline impossible / out-of-scope / unsafe requests cleanly.
+
+## Validation: the counterfactual state swap
+Category-3 samples are generated in counterfactual pairs. A pair is accepted only if:
+1. Flipping a decisive field genuinely changes the correct call.
+2. The teacher gets BOTH branches correct.
+3. `<memory>` is byte-identical across both branches.
+4. `<think>` is non-empty. (Its wording is NOT checked).
+Both surviving branches go into training to force the model to rely on `<state>`.
+
+## Teacher model — Gemma generation pipeline
+The corpus is generated by **Gemma 4 31 B (bf16)**. Teacher generates JSON object, not the template, to prevent surface form errors. Examples are bin-packed whole into 4096-tok windows.
+
+---
+
+# Part 3: SFT Audit Findings
+
+1. **The teacher prompt contradicts itself for 80% of the corpus:** `OUTPUT_SCHEMA` always shows populated memory/turns while structures sometimes require null.
+2. **Seeds presuppose tools the sampler does not provide:** Over 62% of the time, the tool named in the seed is absent.
+3. **`cycle()` correlates domain and subtype:** Subtypes miss entire domains because lengths share factors.
+4. **`Request.system()` is dead code:** Paired branches never receive `CONFLICT_SYSTEM`.
+5. **`multi_stage` asks for final `answer` but never enforces it.**
+6. **Generation is not seeded.**
+
+**Generation settings changed:**
+- Teacher quantization is 4-bit nf4 only.
+- `repetition_penalty = 1.0` (down from 1.05 to avoid fighting JSON).
+- HF generate used at `gen_batch_size = 8`.
+
+**Category 3 Dedup Problem:**
+Dedup was eating 35% of surviving examples because `inventory_amount` survived at 0.58%. The seven other specs differ by tool name, leading to the model guessing without reading `<state>`. A fix bounds the waste via `max_examples_per_seed` (cap=40).
+
+---
+
+# Part 4: Important Notes & V2 Recipe
+
+Captured during the 103M run. 
+
+### #0 issue: dataloader served every batch four times
+`WindowedMemmapDataset` shuffled with a seed that did not depend on worker id. All 4 workers walked the same permutation. The model saw ~2.5 B unique tokens exposed 4 times, rather than 10 B unique tokens. This means effective batch was ~65 sequences instead of 260.
+
+### #1 issue: `GRAD_ACCUM = 13` silently fixed the optimizer-step count
+Setting `GRAD_ACCUM=13` artificially lowered optimizer steps to 9,390. `GRAD_ACCUM=4` would have given 30,517 steps and higher total gradient updates for free.
+
+### #2 issue: `LR_PEAK = 3e-4` is low
+A 3e-4 peak is too low given the batch size. Future runs should use minimum `6e-4` or ideally `8e-4`.
+
+### #3 issue: `ctx = 4096` was over-budgeted
+At 4096, 25% of compute is attention overhead. `ctx=2048` would have been 25% faster with no quality loss for the use case.
+
+## V2 Recipe
+- **Hidden size:** 768-1024
+- **LR:** 8e-4
+- **Ctx:** 2048
+- **Token budget:** Chinchilla-optimal (e.g. 7B tokens for a 350M model).
+Stop overtraining 5x; parameters drive capability, not tokens past optimal.

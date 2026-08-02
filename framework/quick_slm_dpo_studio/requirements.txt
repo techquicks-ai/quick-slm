@@ -1,0 +1,11 @@
+# Server-only dependencies for DPO Studio.
+#
+# The trainer package itself (quick_slm_trainer) is used for its template, tools,
+# and prompts. Install it from the repo root, or add src/ to PYTHONPATH:
+#     pip install -e .            # from the repository root
+#
+# Mock mode needs nothing torch-shaped; numpy comes in as a base dep of the
+# trainer package. Teacher mode additionally needs a CUDA torch plus the sft
+# extra (pip install -e ".[sft]"); see README.md.
+fastapi>=0.110
+uvicorn[standard]>=0.29
